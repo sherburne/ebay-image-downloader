@@ -64,25 +64,61 @@ async def get_matching_images(page: Page, ebay_url: str, regex_pattern: str) -> 
                     
                     # Check if alt matches regex
                     if pattern.search(alt_text):
-                        # Get image URL - try src first, then data-src, then srcset
-                        img_url = await img.get_attribute("src")
-                        if not img_url or img_url.startswith("data:"):
-                            img_url = await img.get_attribute("data-src")
+                        # Try to get full-size image URL from various attributes
+                        # Priority: data-zoom-src > data-full-image > data-original > data-src > srcset (largest) > src
+                        img_url = None
+                        
+                        # Check for full-size image in data attributes
+                        data_attrs = ["data-zoom-src", "data-full-image", "data-original", "data-large-image"]
+                        for attr in data_attrs:
+                            img_url = await img.get_attribute(attr)
+                            if img_url and not img_url.startswith("data:"):
+                                break
+                        
+                        # If no data attribute, try srcset and pick the largest
                         if not img_url or img_url.startswith("data:"):
                             srcset = await img.get_attribute("srcset")
                             if srcset:
-                                # Extract first URL from srcset
-                                img_url = srcset.split(",")[0].strip().split()[0]
+                                # Parse srcset and get the largest image
+                                srcset_parts = srcset.split(",")
+                                largest_url = None
+                                largest_size = 0
+                                for part in srcset_parts:
+                                    parts = part.strip().split()
+                                    if len(parts) >= 1:
+                                        url = parts[0]
+                                        # Try to extract size from descriptor (e.g., "500w" or "1x")
+                                        size = 0
+                                        if len(parts) > 1:
+                                            size_str = parts[1]
+                                            # Extract number from size descriptor
+                                            size_match = re.search(r'(\d+)', size_str)
+                                            if size_match:
+                                                size = int(size_match.group(1))
+                                        if size > largest_size:
+                                            largest_size = size
+                                            largest_url = url
+                                if largest_url:
+                                    img_url = largest_url
                         
-                        if img_url and img_url not in [url for url, _ in matching_images]:
-                            # Try to upgrade to highest resolution
-                            if "s-l" in img_url:
-                                img_url = img_url.replace("s-l500", "s-l1600").replace("s-l1200", "s-l1600").replace("s-l300", "s-l1600")
+                        # Fall back to data-src
+                        if not img_url or img_url.startswith("data:"):
+                            img_url = await img.get_attribute("data-src")
+                        
+                        # Fall back to src
+                        if not img_url or img_url.startswith("data:"):
+                            img_url = await img.get_attribute("src")
+                        
+                        if img_url and not img_url.startswith("data:"):
+                            # Upgrade thumbnail to full-size
+                            img_url = upgrade_to_fullsize_image(img_url)
                             
-                            # Avoid duplicates based on alt text
-                            if alt_text not in seen_alts:
-                                matching_images.append((img_url, alt_text))
-                                seen_alts.add(alt_text)
+                            # Avoid duplicates based on URL
+                            if img_url not in [url for url, _ in matching_images]:
+                                # Avoid duplicates based on alt text
+                                if alt_text not in seen_alts:
+                                    matching_images.append((img_url, alt_text))
+                                    seen_alts.add(alt_text)
                 except Exception as e:
                     continue
         except Exception as e:
@@ -99,23 +135,98 @@ async def get_matching_images(page: Page, ebay_url: str, regex_pattern: str) -> 
                         continue
                     
                     if pattern.search(alt_text):
-                        img_url = await img.get_attribute("src")
+                        # Try to get full-size image URL from various attributes
+                        img_url = None
+                        
+                        # Check for full-size image in data attributes
+                        data_attrs = ["data-zoom-src", "data-full-image", "data-original", "data-large-image"]
+                        for attr in data_attrs:
+                            img_url = await img.get_attribute(attr)
+                            if img_url and not img_url.startswith("data:"):
+                                break
+                        
+                        # Fall back to data-src
                         if not img_url or img_url.startswith("data:"):
                             img_url = await img.get_attribute("data-src")
                         
+                        # Fall back to src
+                        if not img_url or img_url.startswith("data:"):
+                            img_url = await img.get_attribute("src")
+                        
                         if img_url and not img_url.startswith("data:"):
-                            if "s-l" in img_url:
-                                img_url = img_url.replace("s-l500", "s-l1600").replace("s-l1200", "s-l1600").replace("s-l300", "s-l1600")
+                            # Upgrade thumbnail to full-size
+                            img_url = upgrade_to_fullsize_image(img_url)
                             
-                            if alt_text not in seen_alts:
-                                matching_images.append((img_url, alt_text))
-                                seen_alts.add(alt_text)
+                            if img_url not in [url for url, _ in matching_images]:
+                                if alt_text not in seen_alts:
+                                    matching_images.append((img_url, alt_text))
+                                    seen_alts.add(alt_text)
                 except Exception:
                     continue
         except Exception:
             pass
     
     return matching_images
+
+
+def upgrade_to_fullsize_image(img_url: str) -> str:
+    """
+    Upgrades an eBay thumbnail URL to the full-size version.
+    
+    eBay image URLs have patterns like:
+    - s-l64, s-l225, s-l300, s-l500, s-l1200, s-l1600 (size indicators)
+    - Full-size images are typically s-l1600 or can be obtained by removing size indicators
+    
+    Args:
+        img_url (str): The thumbnail or smaller image URL.
+        
+    Returns:
+        str: The full-size image URL.
+    """
+    if not img_url:
+        return img_url
+    
+    # Skip if already a full-size URL pattern
+    if "s-l1600" in img_url:
+        return img_url
+    
+    # Replace common thumbnail sizes with s-l1600
+    size_replacements = [
+        ("s-l64", "s-l1600"),
+        ("s-l96", "s-l1600"),
+        ("s-l140", "s-l1600"),
+        ("s-l225", "s-l1600"),
+        ("s-l300", "s-l1600"),
+        ("s-l400", "s-l1600"),
+        ("s-l500", "s-l1600"),
+        ("s-l600", "s-l1600"),
+        ("s-l800", "s-l1600"),
+        ("s-l1000", "s-l1600"),
+        ("s-l1200", "s-l1600"),
+    ]
+    
+    for old_size, new_size in size_replacements:
+        if old_size in img_url:
+            img_url = img_url.replace(old_size, new_size)
+            break
+    
+    # If no size indicator found, try to add s-l1600 or use original
+    # Some eBay URLs use different patterns
+    if "s-l" not in img_url and "ebayimg.com" in img_url:
+        # Try to extract the base image ID and construct full-size URL
+        # Pattern: https://i.ebayimg.com/images/g/IMAGE_ID/s-l500/something.jpg
+        match = re.search(r'(https://[^/]+/images/[^/]+/[^/]+)/s-l\d+', img_url)
+        if match:
+            base_url = match.group(1)
+            # Try to get the filename
+            filename_match = re.search(r'/([^/]+\.(jpg|jpeg|png|gif))', img_url)
+            if filename_match:
+                filename = filename_match.group(1)
+                return f"{base_url}/s-l1600/{filename}"
+            else:
+                return f"{base_url}/s-l1600"
+    
+    return img_url
 
 
 def extract_item_number(ebay_url: str) -> Optional[str]:
