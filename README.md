@@ -11,7 +11,7 @@ It uses Playwright to load each eBay page, scrapes the primary product image (us
 - `playwright` (`pip install playwright && playwright install`)
 
 **Usage:**  
-1. Edit `gallery.json` with your items (must include `"ebay_url"` and `"id"` for each).
+1. Edit `gallery.json` with your items (must include `"ebay_url"` and `"regex"` for each). The script will download images with a matching `alt` attribute.
 2. Run the script: `python download_ebay_images.py`
 3. Check images and results in the output folder!
 
