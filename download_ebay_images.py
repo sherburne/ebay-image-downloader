@@ -2,11 +2,11 @@
 download_ebay_images.py
 
 Downloads images from eBay listings where alt tags match a regex pattern.
-Saves images into organized folders using CRC hash of alt text as filenames.
+Saves images into organized folders using item number and sequential numbering.
 Crawls through the listing's image carousel.
 
 Usage:
-    python download_ebay_images.py --input gallery.json --output gallery_test5.json --img_root ebay_by_title
+    python download_ebay_images.py --input gallery.json --output gallery-output.json --img_root gallery
 """
 
 import json
@@ -14,7 +14,6 @@ import os
 import asyncio
 import argparse
 import re
-import zlib
 from typing import Optional, Dict, List, Any, Tuple
 from playwright.async_api import async_playwright, Page
 
@@ -119,17 +118,22 @@ async def get_matching_images(page: Page, ebay_url: str, regex_pattern: str) -> 
     return matching_images
 
 
-def get_crc_hash(text: str) -> str:
+def extract_item_number(ebay_url: str) -> Optional[str]:
     """
-    Generates a CRC32 hash from text and returns as hexadecimal string.
+    Extracts the item number from an eBay URL.
 
     Args:
-        text (str): Text to hash.
+        ebay_url (str): The eBay item URL.
 
     Returns:
-        str: Hexadecimal hash string.
+        Optional[str]: The item number if found, otherwise None.
     """
-    return format(zlib.crc32(text.encode('utf-8')) & 0xffffffff, '08x')
+    # eBay URLs typically have format: https://www.ebay.com/itm/ITEM_NUMBER
+    # or https://www.ebay.com/itm/ITEM_NUMBER?...
+    match = re.search(r'/itm/(\d+)', ebay_url)
+    if match:
+        return match.group(1)
+    return None
 
 
 async def download_image(page: Page, img_url: str, save_path: str) -> bool:
@@ -179,7 +183,6 @@ async def process_gallery(
         for item in gallery:
             ebay_url = item.get("ebay_url", "")
             regex_pattern = item.get("regex", "")
-            folder = item.get("folder", "Unknown").strip()
             
             if not ebay_url:
                 print(f"  [!] Skipping item missing ebay_url: {item}")
@@ -189,7 +192,14 @@ async def process_gallery(
                 print(f"  [!] Skipping item missing regex pattern: {ebay_url}")
                 continue
             
+            # Extract item number from URL
+            item_number = extract_item_number(ebay_url)
+            if not item_number:
+                print(f"  [!] Could not extract item number from URL: {ebay_url}")
+                continue
+            
             print(f"Processing: {ebay_url}")
+            print(f"  Item number: {item_number}")
             print(f"  Regex: {regex_pattern}")
             
             matching_images = await get_matching_images(page, ebay_url, regex_pattern)
@@ -200,16 +210,18 @@ async def process_gallery(
             
             print(f"  [*] Found {len(matching_images)} matching image(s)")
             
-            folder_path = os.path.join(img_root, folder)
+            # Create folder named after item number
+            folder_path = os.path.join(img_root, item_number)
             os.makedirs(folder_path, exist_ok=True)
             
             downloaded_files: List[str] = []
             skipped_files: List[str] = []
             
-            for img_url, alt_text in matching_images:
-                # Generate filename from CRC hash of alt text
-                hash_value = get_crc_hash(alt_text)
-                img_fn = f"{hash_value}.jpg"
+            # Download images with sequential numbering
+            for idx, (img_url, alt_text) in enumerate(matching_images, start=1):
+                # Generate filename: item_number - sequential number (001, 002, 003, ...)
+                seq_num = f"{idx:03d}"
+                img_fn = f"{item_number}-{seq_num}.jpg"
                 img_fp = os.path.join(folder_path, img_fn)
                 
                 # Check if file already exists
@@ -245,8 +257,8 @@ async def process_gallery(
 def parse_args():
     parser = argparse.ArgumentParser(description="Download images from eBay listings matching regex patterns on alt tags.")
     parser.add_argument("--input", default="gallery.json", help="Input JSON file (default: gallery.json)")
-    parser.add_argument("--output", default="gallery_test5.json", help="Output JSON file (default: gallery_test5.json)")
-    parser.add_argument("--img_root", default="ebay_by_title", help="Root folder to save images (default: ebay_by_title)")
+    parser.add_argument("--output", default="gallery-output.json", help="Output JSON file (default: gallery-output.json)")
+    parser.add_argument("--img_root", default="gallery", help="Root folder to save images (default: gallery)")
     return parser.parse_args()
 
 
